@@ -7,7 +7,6 @@ const adminPanel = document.getElementById('admin-panel');
 const crewPanel = document.getElementById('crew-panel');
 const statusEl = document.getElementById('status');
 const userInfoEl = document.getElementById('user-info');
-const SINGLE_VESSEL_MODE = true;
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
@@ -57,10 +56,6 @@ function showPanel() {
   if (currentUser.role === 'ADMIN') {
     adminPanel.classList.remove('hidden');
     crewPanel.classList.add('hidden');
-    if (SINGLE_VESSEL_MODE) {
-      document.getElementById('assign-card')?.classList.add('hidden');
-      document.getElementById('assignments-card')?.classList.add('hidden');
-    }
     loadAdminData();
   } else {
     crewPanel.classList.remove('hidden');
@@ -110,17 +105,13 @@ document.getElementById('refresh-admin-ops')?.addEventListener('click', () => lo
 async function loadAdminData() {
   try {
     const [vessels, users, assignments] = await Promise.all([
-      apiFetch('/api/admin/vessels'),
-      apiFetch('/api/admin/users'),
-      SINGLE_VESSEL_MODE ? Promise.resolve([]) : apiFetch('/api/admin/assignments'),
+      apiFetch('/api/admin/vessels'), apiFetch('/api/admin/users'), apiFetch('/api/admin/assignments'),
     ]);
     document.getElementById('vessels-list').innerHTML = vessels.map((v) => `<li>${v.name}<br/><small>ID: ${v.id}</small></li>`).join('') || '<li>No vessels yet.</li>';
     document.getElementById('users-list').innerHTML = users.map((u) => `<li>${u.username} (${u.role})<br/><small>ID: ${u.id}</small></li>`).join('') || '<li>No users found.</li>';
-    if (!SINGLE_VESSEL_MODE) {
-      document.getElementById('assignments-list').innerHTML = assignments.map((a) => `<li>${a.username} → ${a.vessel_name}</li>`).join('') || '<li>No assignments yet.</li>';
-      document.getElementById('assign-user').innerHTML = users.filter((u) => u.role === 'CREW').map((u) => `<option value=\"${u.id}\">${u.username}</option>`).join('');
-      document.getElementById('assign-vessel').innerHTML = vessels.map((v) => `<option value=\"${v.id}\">${v.name}</option>`).join('');
-    }
+    document.getElementById('assignments-list').innerHTML = assignments.map((a) => `<li>${a.username} → ${a.vessel_name}</li>`).join('') || '<li>No assignments yet.</li>';
+    document.getElementById('assign-user').innerHTML = users.filter((u) => u.role === 'CREW').map((u) => `<option value="${u.id}">${u.username}</option>`).join('');
+    document.getElementById('assign-vessel').innerHTML = vessels.map((v) => `<option value="${v.id}">${v.name}</option>`).join('');
     loadAdminOpsReports();
   } catch (error) { setStatus(error.message, true); }
 }
@@ -140,15 +131,13 @@ document.getElementById('user-form').addEventListener('submit', async (event) =>
   } catch (error) { setStatus(error.message, true); }
 });
 
-if (!SINGLE_VESSEL_MODE) {
-  document.getElementById('assign-form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    try {
-      await apiFetch('/api/admin/assignments', { method: 'POST', body: JSON.stringify({ user_id: document.getElementById('assign-user').value, vessel_id: document.getElementById('assign-vessel').value }) });
-      setStatus('Assignment saved.'); loadAdminData();
-    } catch (error) { setStatus(error.message, true); }
-  });
-}
+document.getElementById('assign-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  try {
+    await apiFetch('/api/admin/assignments', { method: 'POST', body: JSON.stringify({ user_id: document.getElementById('assign-user').value, vessel_id: document.getElementById('assign-vessel').value }) });
+    setStatus('Assignment saved.'); loadAdminData();
+  } catch (error) { setStatus(error.message, true); }
+});
 
 function setCrewView(view) {
   const views = { new: 'crew-new-entry', timeline: 'crew-timeline', summary: 'crew-summary', report: 'crew-ops-report' };
