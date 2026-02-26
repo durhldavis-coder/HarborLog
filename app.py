@@ -23,8 +23,6 @@ DB_PATH = DATA_DIR / "harborlog.db"
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("PORT", "3000"))
 SECRET = os.environ.get("HARBORLOG_SECRET", "harborlog-dev-secret-change-me")
-SINGLE_VESSEL_MODE = os.environ.get("SINGLE_VESSEL_MODE", "true").lower() == "true"
-HOME_VESSEL_NAME = os.environ.get("HOME_VESSEL_NAME", "Blue Sea")
 
 _db_local = threading.local()
 VALID_CATEGORIES = {"Weather", "Operations", "Safety", "Issue/Delay"}
@@ -56,102 +54,8 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
-
-
-def ensure_home_vessel(conn: sqlite3.Connection):
-    now = now_iso()
-    vessel = conn.execute("SELECT * FROM vessels WHERE name = ?", (HOME_VESSEL_NAME,)).fetchone()
-    if vessel:
-        return vessel
-    vessel_id = str(uuid4())
-    conn.execute("INSERT INTO vessels (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", (vessel_id, HOME_VESSEL_NAME, now, now))
-    conn.commit()
-    return conn.execute("SELECT * FROM vessels WHERE id = ?", (vessel_id,)).fetchone()
-
-
-def assign_user_to_home_vessel(conn: sqlite3.Connection, user_id: str):
-    home = ensure_home_vessel(conn)
-    now = now_iso()
-    existing = conn.execute("SELECT id FROM vessel_assignments WHERE user_id = ?", (user_id,)).fetchone()
-    if existing:
-        conn.execute("UPDATE vessel_assignments SET vessel_id = ?, updated_at = ? WHERE user_id = ?", (home["id"], now, user_id))
-    else:
-        conn.execute("INSERT INTO vessel_assignments (id, user_id, vessel_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", (str(uuid4()), user_id, home["id"], now, now))
-    conn.commit()
-    return home
-
-
-def ensure_default_tanks(conn: sqlite3.Connection, vessel_id: str) -> None:
-    defaults = [
-        ("#1 Port", "Main", "Port", 2000.0),
-        ("#1 Starboard", "Main", "Starboard", 2000.0),
-        ("#3 Port", "Main", "Port", 2000.0),
-        ("#3 Starboard", "Main", "Starboard", 2000.0),
-        ("#4 Port", "Main", "Port", 2000.0),
-        ("#4 Starboard", "Main", "Starboard", 2000.0),
-        ("Port Day Tank", "Day", "Port", 500.0),
-        ("Starboard Day Tank", "Day", "Starboard", 500.0),
-    ]
-    ts = now_iso()
-    for tank_name, tank_group, side, capacity in defaults:
-        exists = conn.execute(
-            "SELECT id FROM tanks WHERE vessel_id=? AND tank_name=?",
-            (vessel_id, tank_name),
-        ).fetchone()
-        if exists:
-            continue
-        conn.execute(
-            """
-            INSERT INTO tanks (id, vessel_id, tank_name, tank_group, side, capacity_gallons, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (str(uuid4()), vessel_id, tank_name, tank_group, side, capacity, ts),
-        )
-
-
-def vessel_tank_balances(conn: sqlite3.Connection, vessel_id: str) -> list[dict]:
-    tanks = [dict(r) for r in conn.execute(
-        "SELECT * FROM tanks WHERE vessel_id=? ORDER BY tank_group ASC, tank_name ASC", (vessel_id,)
-    ).fetchall()]
-    balances = {t["id"]: 0.0 for t in tanks}
-    events = conn.execute(
-        "SELECT * FROM fuel_events WHERE vessel_id=? ORDER BY timestamp ASC, created_at ASC",
-        (vessel_id,),
-    ).fetchall()
-    for row in events:
-        e = dict(row)
-        g = float(e["gallons"] or 0)
-        src = e.get("source_tank_id")
-        dst = e.get("destination_tank_id")
-        event_type = e["event_type"]
-        if event_type == "transfer_internal":
-            if src in balances:
-                balances[src] -= g
-            if dst in balances:
-                balances[dst] += g
-        elif event_type in {"bunker_received", "receive_external"}:
-            if dst in balances:
-                balances[dst] += g
-        elif event_type == "offload_external":
-            if src in balances:
-                balances[src] -= g
-        elif event_type == "sounding":
-            tank_id = dst or src
-            if tank_id in balances:
-                balances[tank_id] = g
-        elif event_type == "correction":
-            if src in balances:
-                balances[src] -= g
-            if dst in balances:
-                balances[dst] += g
-
-    for tank in tanks:
-        tank["balance_gallons"] = round(balances.get(tank["id"], 0.0), 3)
-    return tanks
-
 def init_db() -> None:
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(
         """
@@ -159,7 +63,7 @@ def init_db() -> None:
             id TEXT PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('ADMIN','CREW','ENGINEER','BRIDGE_OFFICER','READ_ONLY')),
+            role TEXT NOT NULL CHECK (role IN ('ADMIN','CREW')),
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -245,49 +149,11 @@ def init_db() -> None:
             FOREIGN KEY(crew_user_id) REFERENCES users(id) ON DELETE CASCADE
         );
 
-        CREATE TABLE IF NOT EXISTS tanks (
-            id TEXT PRIMARY KEY,
-            vessel_id TEXT NOT NULL,
-            tank_name TEXT NOT NULL,
-            tank_group TEXT NOT NULL CHECK (tank_group IN ('Main','Day')),
-            side TEXT NOT NULL CHECK (side IN ('Port','Starboard')),
-            capacity_gallons REAL NOT NULL,
-            created_at TEXT NOT NULL,
-            UNIQUE(vessel_id, tank_name),
-            FOREIGN KEY(vessel_id) REFERENCES vessels(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS fuel_events (
-            id TEXT PRIMARY KEY,
-            vessel_id TEXT NOT NULL,
-            event_type TEXT NOT NULL CHECK (event_type IN ('transfer_internal','bunker_received','offload_external','receive_external','sounding','charter_on','charter_off','correction')),
-            timestamp TEXT NOT NULL,
-            source_tank_id TEXT,
-            destination_tank_id TEXT,
-            gallons REAL NOT NULL,
-            operational_mode TEXT NOT NULL CHECK (operational_mode IN ('Dockside','Underway','On DP')),
-            reference_number TEXT,
-            notes TEXT NOT NULL,
-            correction_of_event_id TEXT,
-            reason TEXT,
-            entered_by TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(vessel_id) REFERENCES vessels(id) ON DELETE CASCADE,
-            FOREIGN KEY(source_tank_id) REFERENCES tanks(id) ON DELETE SET NULL,
-            FOREIGN KEY(destination_tank_id) REFERENCES tanks(id) ON DELETE SET NULL,
-            FOREIGN KEY(correction_of_event_id) REFERENCES fuel_events(id) ON DELETE RESTRICT,
-            FOREIGN KEY(entered_by) REFERENCES users(id) ON DELETE RESTRICT
-        );
-
         CREATE INDEX IF NOT EXISTS idx_log_entries_crew_ts ON log_entries (crew_user_id, timestamp DESC);
         CREATE INDEX IF NOT EXISTS idx_daily_reports_crew_day ON daily_reports (crew_user_id, report_day DESC);
         CREATE INDEX IF NOT EXISTS idx_daily_ops_reports_crew_day ON daily_ops_reports (crew_user_id, report_day DESC);
         """
     )
-
-    if SINGLE_VESSEL_MODE:
-        hv = ensure_home_vessel(conn)
-        ensure_default_tanks(conn, hv["id"])
 
     has_admin = conn.execute("SELECT id FROM users WHERE role='ADMIN' LIMIT 1").fetchone()
     if not has_admin:
@@ -298,8 +164,6 @@ def init_db() -> None:
         )
         print("Seeded default admin user: admin / admin123")
 
-    for vr in conn.execute("SELECT id FROM vessels").fetchall():
-        ensure_default_tanks(conn, vr[0])
     conn.commit()
     conn.close()
 
@@ -491,6 +355,40 @@ class HarborLogHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/"):
             return self.handle_api("POST", parsed)
 
+        if method == "GET" and path == "/api/daily-ops-report/fuel-ticket":
+            user = self.require_auth(query)
+            if not user:
+                return
+            report_id = (query.get("report_id") or [""])[0]
+            if not report_id:
+                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "report_id is required."})
+            report = conn.execute("SELECT * FROM daily_ops_reports WHERE id = ?", (report_id,)).fetchone()
+            if not report:
+                return self.json_response(HTTPStatus.NOT_FOUND, {"error": "Report not found."})
+            if user.get("role") == "CREW":
+                vessel = self.crew_assigned_vessel(conn, user["id"])
+                if not vessel or vessel["id"] != report["vessel_id"]:
+                    return self.json_response(HTTPStatus.FORBIDDEN, {"error": "Forbidden."})
+            elif user.get("role") != "ADMIN":
+                return self.json_response(HTTPStatus.FORBIDDEN, {"error": "Forbidden."})
+
+            attachment_path = report["fuel_ticket_attachment_path"]
+            if not attachment_path:
+                return self.json_response(HTTPStatus.NOT_FOUND, {"error": "No fuel ticket PDF attached for this report."})
+            full = BASE_DIR / attachment_path
+            if not full.exists() or not full.is_file():
+                return self.json_response(HTTPStatus.NOT_FOUND, {"error": "Attached fuel ticket file not found."})
+            payload = full.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Disposition", f"attachment; filename=fuel-ticket-{report_id}.pdf")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        return self.json_response(HTTPStatus.NOT_FOUND, {"error": "Not found."})
+
     def read_json(self):
         size = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(size) if size else b"{}"
@@ -556,16 +454,10 @@ class HarborLogHandler(BaseHTTPRequestHandler):
         return user
 
     def crew_assigned_vessel(self, conn, user_id):
-        assigned = conn.execute(
+        return conn.execute(
             "SELECT v.id, v.name FROM vessel_assignments va JOIN vessels v ON v.id = va.vessel_id WHERE va.user_id = ?",
             (user_id,),
         ).fetchone()
-        if assigned:
-            return assigned
-        if SINGLE_VESSEL_MODE:
-            home = assign_user_to_home_vessel(conn, user_id)
-            return {"id": home["id"], "name": home["name"]}
-        return None
 
     def handle_api(self, method, parsed):
         conn = get_db()
@@ -595,166 +487,6 @@ class HarborLogHandler(BaseHTTPRequestHandler):
                 return self.json_response(HTTPStatus.NOT_FOUND, {"error": "User not found."})
             return self.json_response(HTTPStatus.OK, dict(row))
 
-        if method == "GET" and path == "/api/fuel/tanks":
-            user = self.require_auth(query)
-            if not user:
-                return
-            vessel_id = (query.get("vessel_id") or [""])[0]
-            if user.get("role") != "ADMIN":
-                vessel = self.crew_assigned_vessel(conn, user["id"])
-                if not vessel:
-                    return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "No vessel assigned."})
-                vessel_id = vessel["id"]
-            if not vessel_id:
-                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "vessel_id required for admin."})
-            ensure_default_tanks(conn, vessel_id)
-            conn.commit()
-            return self.json_response(HTTPStatus.OK, vessel_tank_balances(conn, vessel_id))
-
-        if method == "GET" and path == "/api/fuel/events":
-            user = self.require_auth(query)
-            if not user:
-                return
-            vessel_id = (query.get("vessel_id") or [""])[0]
-            if user.get("role") != "ADMIN":
-                vessel = self.crew_assigned_vessel(conn, user["id"])
-                if not vessel:
-                    return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "No vessel assigned."})
-                vessel_id = vessel["id"]
-            if not vessel_id:
-                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "vessel_id required for admin."})
-
-            where = ["vessel_id=?"]
-            args = [vessel_id]
-            start = (query.get("start") or [""])[0]
-            end = (query.get("end") or [""])[0]
-            event_type = (query.get("event_type") or [""])[0]
-            op_mode = (query.get("operational_mode") or [""])[0]
-            if start:
-                where.append("timestamp >= ?")
-                args.append(start)
-            if end:
-                where.append("timestamp <= ?")
-                args.append(end)
-            if event_type:
-                where.append("event_type = ?")
-                args.append(event_type)
-            if op_mode:
-                where.append("operational_mode = ?")
-                args.append(op_mode)
-            q = f"SELECT * FROM fuel_events WHERE {' AND '.join(where)} ORDER BY timestamp DESC, created_at DESC"
-            rows = [dict(r) for r in conn.execute(q, tuple(args)).fetchall()]
-            return self.json_response(HTTPStatus.OK, rows)
-
-        if method == "POST" and path == "/api/fuel/events":
-            user = self.require_auth(query)
-            if not user:
-                return
-            if user.get("role") not in {"ENGINEER", "BRIDGE_OFFICER"}:
-                return self.json_response(HTTPStatus.FORBIDDEN, {"error": "Only ENGINEER and BRIDGE_OFFICER can create fuel events."})
-            vessel = self.crew_assigned_vessel(conn, user["id"])
-            if not vessel:
-                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "No vessel assigned."})
-
-            body = self.read_json() or {}
-            event_type = body.get("event_type")
-            valid_types = {"transfer_internal", "bunker_received", "offload_external", "receive_external", "sounding", "charter_on", "charter_off", "correction"}
-            if event_type not in valid_types:
-                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "Invalid event_type."})
-            mode = body.get("operational_mode")
-            if mode not in {"Dockside", "Underway", "On DP"}:
-                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "Invalid operational_mode."})
-            try:
-                gallons = float(body.get("gallons"))
-                if gallons < 0:
-                    raise ValueError
-            except Exception:
-                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "gallons must be a non-negative number."})
-
-            src = body.get("source_tank_id") or None
-            dst = body.get("destination_tank_id") or None
-            tank_ids = {r["id"] for r in conn.execute("SELECT id FROM tanks WHERE vessel_id=?", (vessel["id"],)).fetchall()}
-            if src and src not in tank_ids:
-                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "source_tank_id is invalid for vessel."})
-            if dst and dst not in tank_ids:
-                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "destination_tank_id is invalid for vessel."})
-
-            if event_type == "transfer_internal" and (not src or not dst or src == dst):
-                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "transfer_internal requires distinct source and destination tanks."})
-            if event_type in {"bunker_received", "receive_external"} and not dst:
-                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "destination_tank_id is required."})
-            if event_type == "offload_external" and not src:
-                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "source_tank_id is required."})
-            if event_type == "sounding" and not (src or dst):
-                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "sounding requires source_tank_id or destination_tank_id."})
-
-            correction_of_event_id = body.get("correction_of_event_id") or None
-            reason = (body.get("reason") or "").strip() or None
-            if event_type == "correction":
-                if not correction_of_event_id or not reason:
-                    return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "correction requires correction_of_event_id and reason."})
-                original = conn.execute(
-                    "SELECT id, event_type FROM fuel_events WHERE id=? AND vessel_id=?",
-                    (correction_of_event_id, vessel["id"]),
-                ).fetchone()
-                if not original:
-                    return self.json_response(HTTPStatus.NOT_FOUND, {"error": "Original event not found."})
-                if original["event_type"] in {"charter_on", "charter_off"}:
-                    return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "charter_on/charter_off events are locked."})
-
-            ts = now_iso()
-            event = {
-                "id": str(uuid4()),
-                "vessel_id": vessel["id"],
-                "event_type": event_type,
-                "timestamp": body.get("timestamp") or ts,
-                "source_tank_id": src,
-                "destination_tank_id": dst,
-                "gallons": gallons,
-                "operational_mode": mode,
-                "reference_number": (body.get("reference_number") or "").strip() or None,
-                "notes": (body.get("notes") or "").strip(),
-                "correction_of_event_id": correction_of_event_id,
-                "reason": reason,
-                "entered_by": user["id"],
-                "created_at": ts,
-            }
-            conn.execute(
-                """
-                INSERT INTO fuel_events (
-                    id, vessel_id, event_type, timestamp, source_tank_id, destination_tank_id,
-                    gallons, operational_mode, reference_number, notes, correction_of_event_id,
-                    reason, entered_by, created_at
-                ) VALUES (
-                    :id, :vessel_id, :event_type, :timestamp, :source_tank_id, :destination_tank_id,
-                    :gallons, :operational_mode, :reference_number, :notes, :correction_of_event_id,
-                    :reason, :entered_by, :created_at
-                )
-                """,
-                event,
-            )
-            conn.commit()
-            return self.json_response(HTTPStatus.CREATED, event)
-
-        if method == "GET" and path == "/api/fuel/summary-24h":
-            user = self.require_auth(query)
-            if not user:
-                return
-            vessel_id = (query.get("vessel_id") or [""])[0]
-            if user.get("role") != "ADMIN":
-                vessel = self.crew_assigned_vessel(conn, user["id"])
-                if not vessel:
-                    return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "No vessel assigned."})
-                vessel_id = vessel["id"]
-            if not vessel_id:
-                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "vessel_id required for admin."})
-            since = (datetime.now(timezone.utc) - timedelta(hours=24)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-            rows = conn.execute(
-                "SELECT event_type, COALESCE(SUM(gallons),0) AS g FROM fuel_events WHERE vessel_id=? AND timestamp>=? GROUP BY event_type",
-                (vessel_id, since),
-            ).fetchall()
-            return self.json_response(HTTPStatus.OK, {"since": since, "totals": {r["event_type"]: float(r["g"]) for r in rows}})
-
         if method == "POST" and path == "/api/admin/vessels":
             if not self.require_role("ADMIN", query):
                 return
@@ -766,7 +498,6 @@ class HarborLogHandler(BaseHTTPRequestHandler):
             vessel = {"id": str(uuid4()), "name": name, "created_at": ts, "updated_at": ts}
             try:
                 conn.execute("INSERT INTO vessels (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", (vessel["id"], vessel["name"], vessel["created_at"], vessel["updated_at"]))
-                ensure_default_tanks(conn, vessel["id"])
                 conn.commit()
             except sqlite3.IntegrityError:
                 return self.json_response(HTTPStatus.CONFLICT, {"error": "Vessel name must be unique."})
@@ -784,16 +515,13 @@ class HarborLogHandler(BaseHTTPRequestHandler):
             username = (body.get("username") or "").strip()
             password = body.get("password") or ""
             role = body.get("role")
-            if not username or not password or role not in {"ADMIN", "CREW", "ENGINEER", "BRIDGE_OFFICER", "READ_ONLY"}:
+            if not username or not password or role not in {"ADMIN", "CREW"}:
                 return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "Username, password, and valid role are required."})
             ts = now_iso()
             row = {"id": str(uuid4()), "username": username, "role": role, "created_at": ts, "updated_at": ts}
             try:
                 conn.execute("INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", (row["id"], row["username"], hash_password(password), row["role"], row["created_at"], row["updated_at"]))
                 conn.commit()
-                if SINGLE_VESSEL_MODE and row["role"] != "ADMIN":
-                    home = assign_user_to_home_vessel(conn, row["id"])
-                    row["auto_assigned_vessel"] = {"id": home["id"], "name": home["name"]}
             except sqlite3.IntegrityError:
                 return self.json_response(HTTPStatus.CONFLICT, {"error": "Username already exists."})
             return self.json_response(HTTPStatus.CREATED, row)
@@ -807,8 +535,6 @@ class HarborLogHandler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/admin/assignments":
             if not self.require_role("ADMIN", query):
                 return
-            if SINGLE_VESSEL_MODE:
-                return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "Manual assignments are disabled in SINGLE_VESSEL_MODE."})
             body = self.read_json() or {}
             user_id = body.get("user_id")
             vessel_id = body.get("vessel_id")
@@ -837,8 +563,6 @@ class HarborLogHandler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/api/admin/assignments":
             if not self.require_role("ADMIN", query):
                 return
-            if SINGLE_VESSEL_MODE:
-                return self.json_response(HTTPStatus.OK, [])
             rows = [dict(r) for r in conn.execute("""
                 SELECT va.id, va.user_id, u.username, va.vessel_id, v.name AS vessel_name, va.created_at, va.updated_at
                 FROM vessel_assignments va JOIN users u ON u.id = va.user_id JOIN vessels v ON v.id = va.vessel_id
@@ -948,13 +672,10 @@ class HarborLogHandler(BaseHTTPRequestHandler):
             row = conn.execute("""
                 SELECT * FROM daily_reports WHERE vessel_id = ? AND report_day = ?
             """, (vessel["id"], day)).fetchone()
-            since_24h = (datetime.now(timezone.utc)-timedelta(hours=24)).replace(microsecond=0).isoformat().replace("+00:00","Z")
-            tr = conn.execute("SELECT COALESCE(SUM(gallons),0) AS t FROM fuel_events WHERE vessel_id=? AND event_type='transfer_internal' AND timestamp>=?", (vessel["id"], since_24h)).fetchone()["t"]
             return self.json_response(HTTPStatus.OK, {
                 "day": day,
                 "vessel": {"id": vessel["id"], "name": vessel["name"]},
                 "report": dict(row) if row else None,
-                "fuel_transfer_24h_gallons": float(tr or 0),
             })
 
         if method == "POST" and path == "/api/crew/daily-report":
@@ -1070,14 +791,11 @@ class HarborLogHandler(BaseHTTPRequestHandler):
                 return self.json_response(HTTPStatus.BAD_REQUEST, {"error": "Crew member is not assigned to a vessel."})
             report = conn.execute("SELECT * FROM daily_ops_reports WHERE vessel_id=? AND report_day=?", (vessel["id"], day)).fetchone()
             last_report = conn.execute("SELECT * FROM daily_ops_reports WHERE vessel_id=? ORDER BY report_day DESC LIMIT 1", (vessel["id"],)).fetchone()
-            since_24h = (datetime.now(timezone.utc)-timedelta(hours=24)).replace(microsecond=0).isoformat().replace("+00:00","Z")
-            transfer_24h = conn.execute("SELECT COALESCE(SUM(gallons),0) AS t FROM fuel_events WHERE vessel_id=? AND event_type='transfer_internal' AND timestamp>=?", (vessel["id"], since_24h)).fetchone()["t"]
             return self.json_response(HTTPStatus.OK, {
                 "report_date": day,
                 "vessel": {"id": vessel["id"], "name": vessel["name"]},
                 "report": dict(report) if report else None,
                 "last_report": dict(last_report) if last_report else None,
-                "fuel_transfer_24h_gallons": float(transfer_24h or 0),
             })
 
         if method == "POST" and path == "/api/crew/daily-ops-report":

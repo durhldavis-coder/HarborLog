@@ -7,7 +7,6 @@ const adminPanel = document.getElementById('admin-panel');
 const crewPanel = document.getElementById('crew-panel');
 const statusEl = document.getElementById('status');
 const userInfoEl = document.getElementById('user-info');
-const SINGLE_VESSEL_MODE = true;
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
@@ -57,20 +56,12 @@ function showPanel() {
   if (currentUser.role === 'ADMIN') {
     adminPanel.classList.remove('hidden');
     crewPanel.classList.add('hidden');
-    if (SINGLE_VESSEL_MODE) {
-      document.getElementById('assign-card')?.classList.add('hidden');
-      document.getElementById('assignments-card')?.classList.add('hidden');
-    }
     loadAdminData();
   } else {
     crewPanel.classList.remove('hidden');
     adminPanel.classList.add('hidden');
     document.getElementById('ops-report-day').value = utcToday();
-    const isCrew = currentUser.role === 'CREW';
-    ['nav-new-entry','nav-timeline','nav-summary','nav-report'].forEach((id) => {
-      document.getElementById(id).classList.toggle('hidden', !isCrew);
-    });
-    setCrewView(isCrew ? 'new' : 'fuel');
+    setCrewView('new');
     loadCrewData();
   }
 }
@@ -114,17 +105,13 @@ document.getElementById('refresh-admin-ops')?.addEventListener('click', () => lo
 async function loadAdminData() {
   try {
     const [vessels, users, assignments] = await Promise.all([
-      apiFetch('/api/admin/vessels'),
-      apiFetch('/api/admin/users'),
-      SINGLE_VESSEL_MODE ? Promise.resolve([]) : apiFetch('/api/admin/assignments'),
+      apiFetch('/api/admin/vessels'), apiFetch('/api/admin/users'), apiFetch('/api/admin/assignments'),
     ]);
     document.getElementById('vessels-list').innerHTML = vessels.map((v) => `<li>${v.name}<br/><small>ID: ${v.id}</small></li>`).join('') || '<li>No vessels yet.</li>';
     document.getElementById('users-list').innerHTML = users.map((u) => `<li>${u.username} (${u.role})<br/><small>ID: ${u.id}</small></li>`).join('') || '<li>No users found.</li>';
-    if (!SINGLE_VESSEL_MODE) {
-      document.getElementById('assignments-list').innerHTML = assignments.map((a) => `<li>${a.username} → ${a.vessel_name}</li>`).join('') || '<li>No assignments yet.</li>';
-      document.getElementById('assign-user').innerHTML = users.filter((u) => u.role === 'CREW').map((u) => `<option value=\"${u.id}\">${u.username}</option>`).join('');
-      document.getElementById('assign-vessel').innerHTML = vessels.map((v) => `<option value=\"${v.id}\">${v.name}</option>`).join('');
-    }
+    document.getElementById('assignments-list').innerHTML = assignments.map((a) => `<li>${a.username} → ${a.vessel_name}</li>`).join('') || '<li>No assignments yet.</li>';
+    document.getElementById('assign-user').innerHTML = users.filter((u) => u.role === 'CREW').map((u) => `<option value="${u.id}">${u.username}</option>`).join('');
+    document.getElementById('assign-vessel').innerHTML = vessels.map((v) => `<option value="${v.id}">${v.name}</option>`).join('');
     loadAdminOpsReports();
   } catch (error) { setStatus(error.message, true); }
 }
@@ -144,32 +131,28 @@ document.getElementById('user-form').addEventListener('submit', async (event) =>
   } catch (error) { setStatus(error.message, true); }
 });
 
-if (!SINGLE_VESSEL_MODE) {
-  document.getElementById('assign-form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    try {
-      await apiFetch('/api/admin/assignments', { method: 'POST', body: JSON.stringify({ user_id: document.getElementById('assign-user').value, vessel_id: document.getElementById('assign-vessel').value }) });
-      setStatus('Assignment saved.'); loadAdminData();
-    } catch (error) { setStatus(error.message, true); }
-  });
-}
+document.getElementById('assign-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  try {
+    await apiFetch('/api/admin/assignments', { method: 'POST', body: JSON.stringify({ user_id: document.getElementById('assign-user').value, vessel_id: document.getElementById('assign-vessel').value }) });
+    setStatus('Assignment saved.'); loadAdminData();
+  } catch (error) { setStatus(error.message, true); }
+});
 
 function setCrewView(view) {
-  const views = { new: 'crew-new-entry', timeline: 'crew-timeline', summary: 'crew-summary', report: 'crew-ops-report', fuel: 'crew-fuel' };
-  const nav = { new: 'nav-new-entry', timeline: 'nav-timeline', summary: 'nav-summary', report: 'nav-report', fuel: 'nav-fuel' };
+  const views = { new: 'crew-new-entry', timeline: 'crew-timeline', summary: 'crew-summary', report: 'crew-ops-report' };
+  const nav = { new: 'nav-new-entry', timeline: 'nav-timeline', summary: 'nav-summary', report: 'nav-report' };
   Object.keys(views).forEach((k) => {
     document.getElementById(views[k]).classList.toggle('hidden', k !== view);
     document.getElementById(nav[k]).classList.toggle('active', k === view);
   });
   if (view === 'report') loadDailyOpsReport();
-  if (view === 'fuel') loadFuelModule();
 }
 
 document.getElementById('nav-new-entry').addEventListener('click', () => setCrewView('new'));
 document.getElementById('nav-timeline').addEventListener('click', () => setCrewView('timeline'));
 document.getElementById('nav-summary').addEventListener('click', () => setCrewView('summary'));
 document.getElementById('nav-report').addEventListener('click', () => setCrewView('report'));
-document.getElementById('nav-fuel').addEventListener('click', () => setCrewView('fuel'));
 document.getElementById('ops-report-day').addEventListener('change', () => loadDailyOpsReport());
 
 async function loadCrewData() {
@@ -181,11 +164,7 @@ async function loadCrewData() {
     document.getElementById('assigned-vessel').textContent = error.message;
     document.getElementById('entry-vessel').value = 'No vessel assigned';
   }
-  if (currentUser.role === 'CREW') {
-    await Promise.all([loadTimeline(), loadDailySummary(), loadDailyOpsReport(), loadFuelModule()]);
-    return;
-  }
-  await loadFuelModule();
+  await Promise.all([loadTimeline(), loadDailySummary(), loadDailyOpsReport()]);
 }
 
 async function loadTimeline() {
@@ -250,85 +229,10 @@ async function loadDailyOpsReport() {
     const data = await apiFetch(`/api/crew/daily-ops-report?day=${encodeURIComponent(day)}`);
     document.getElementById('ops-report-day').value = data.report_date;
     if (data.report) fillOpsForm(data.report); else if (data.last_report) fillOpsForm(data.last_report); else fillOpsForm({});
-    if (!data.report && (document.getElementById('fuel-used-24h').value === '' || Number(document.getElementById('fuel-used-24h').value) === 0)) {
-      document.getElementById('fuel-used-24h').value = String(data.fuel_transfer_24h_gallons ?? '');
-    }
     renderOmView(await apiFetch(`/api/crew/daily-ops-report/view?view=om&day=${encodeURIComponent(day)}`));
     renderOfficeView(await apiFetch(`/api/crew/daily-ops-report/view?view=office&day=${encodeURIComponent(day)}`));
   } catch (error) { setStatus(error.message, true); }
 }
-
-
-
-function qsDateTime(id) {
-  const raw = document.getElementById(id).value;
-  if (!raw) return '';
-  return new Date(raw).toISOString();
-}
-
-function canWriteFuel() {
-  return currentUser && ['ENGINEER', 'BRIDGE_OFFICER'].includes(currentUser.role);
-}
-
-async function loadFuelModule() {
-  try {
-    const [tanks, events] = await Promise.all([
-      apiFetch('/api/fuel/tanks'),
-      loadFuelEvents(),
-    ]);
-    const tankOpts = ['<option value="">(none)</option>'].concat(tanks.map((t) => `<option value="${t.id}">${t.tank_name}</option>`)).join('');
-    document.getElementById('fuel-source-tank').innerHTML = tankOpts;
-    document.getElementById('fuel-destination-tank').innerHTML = tankOpts;
-    document.getElementById('fuel-tank-list').innerHTML = tanks.map((t) => `<li>${t.tank_name} (${t.tank_group}/${t.side}) — Balance: ${t.balance_gallons} gal</li>`).join('') || '<li>No tanks found.</li>';
-    const writable = canWriteFuel();
-    document.getElementById('fuel-rbac-note').textContent = writable ? 'You can create fuel events.' : 'Read-only: only Engineer and Bridge Officer can create fuel events.';
-    document.querySelectorAll('#fuel-form input, #fuel-form select, #fuel-form textarea, #fuel-form button').forEach((el) => {
-      el.disabled = !writable;
-    });
-  } catch (error) { setStatus(error.message, true); }
-}
-
-async function loadFuelEvents() {
-  const params = new URLSearchParams();
-  const start = qsDateTime('fuel-filter-start');
-  const end = qsDateTime('fuel-filter-end');
-  const eventType = document.getElementById('fuel-filter-type').value;
-  const mode = document.getElementById('fuel-filter-mode').value;
-  if (start) params.set('start', start);
-  if (end) params.set('end', end);
-  if (eventType) params.set('event_type', eventType);
-  if (mode) params.set('operational_mode', mode);
-  const events = await apiFetch(`/api/fuel/events${params.toString() ? `?${params.toString()}` : ''}`);
-  document.getElementById('fuel-events-list').innerHTML = events.map((e) => `<li><strong>${new Date(e.timestamp).toLocaleString()}</strong> — ${e.event_type} (${e.operational_mode})<br/>Gallons: ${e.gallons}<br/>Source: ${e.source_tank_id || '-'} | Destination: ${e.destination_tank_id || '-'}<br/>Ref: ${e.reference_number || '-'}<br/>Notes: ${e.notes || '-'}${e.correction_of_event_id ? `<br/>Correction of: ${e.correction_of_event_id} | Reason: ${e.reason}` : ''}<br/><small>ID: ${e.id}</small></li>`).join('') || '<li>No fuel events found.</li>';
-  return events;
-}
-
-document.getElementById('fuel-refresh-btn').addEventListener('click', () => loadFuelModule());
-document.getElementById('fuel-filter-start').addEventListener('change', () => loadFuelEvents().catch((e) => setStatus(e.message, true)));
-document.getElementById('fuel-filter-end').addEventListener('change', () => loadFuelEvents().catch((e) => setStatus(e.message, true)));
-document.getElementById('fuel-filter-type').addEventListener('change', () => loadFuelEvents().catch((e) => setStatus(e.message, true)));
-document.getElementById('fuel-filter-mode').addEventListener('change', () => loadFuelEvents().catch((e) => setStatus(e.message, true)));
-
-document.getElementById('fuel-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  try {
-    const payload = {
-      event_type: document.getElementById('fuel-event-type').value,
-      operational_mode: document.getElementById('fuel-operational-mode').value,
-      source_tank_id: document.getElementById('fuel-source-tank').value || null,
-      destination_tank_id: document.getElementById('fuel-destination-tank').value || null,
-      gallons: Number(document.getElementById('fuel-gallons').value),
-      reference_number: document.getElementById('fuel-reference-number').value.trim() || null,
-      notes: document.getElementById('fuel-notes').value.trim(),
-      correction_of_event_id: document.getElementById('fuel-correction-event-id').value.trim() || null,
-      reason: document.getElementById('fuel-correction-reason').value.trim() || null,
-    };
-    await apiFetch('/api/fuel/events', { method: 'POST', body: JSON.stringify(payload) });
-    setStatus('Fuel event saved.');
-    document.getElementById('fuel-form').reset();
-    await loadFuelModule();
-  } catch (error) { setStatus(error.message, true); }
-});
 
 document.getElementById('entry-form').addEventListener('submit', async (event) => {
   event.preventDefault();

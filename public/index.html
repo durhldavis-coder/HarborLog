@@ -61,16 +61,13 @@
                 <select id="new-role" required>
                   <option value="CREW">Crew</option>
                   <option value="ADMIN">Admin</option>
-                  <option value="ENGINEER">Engineer</option>
-                  <option value="BRIDGE_OFFICER">Bridge Officer</option>
-                  <option value="READ_ONLY">Read-only</option>
                 </select>
               </label>
               <button type="submit">Create User</button>
             </form>
           </div>
 
-          <div class="card" id="assign-card">
+          <div class="card">
             <h3>Assign Crew to Vessel</h3>
             <form id="assign-form">
               <label>Crew User
@@ -93,7 +90,7 @@
             <h3>Users</h3>
             <ul id="users-list"></ul>
           </div>
-          <div class="card" id="assignments-card">
+          <div class="card">
             <h3>Assignments</h3>
             <ul id="assignments-list"></ul>
           </div>
@@ -122,7 +119,6 @@
             <button id="nav-timeline" class="secondary">Timeline</button>
             <button id="nav-summary" class="secondary">Daily Summary</button>
             <button id="nav-report" class="secondary">Daily Ops Report</button>
-            <button id="nav-fuel" class="secondary">Fuel</button>
           </div>
         </div>
 
@@ -164,92 +160,6 @@
           <div id="summary-days"></div>
         </section>
 
-
-        <section id="crew-fuel" class="card hidden">
-          <div class="row">
-            <h3>Fuel Events</h3>
-            <button id="fuel-refresh-btn" class="secondary">Refresh</button>
-          </div>
-          <div class="grid">
-            <label>Start
-              <input type="datetime-local" id="fuel-filter-start" />
-            </label>
-            <label>End
-              <input type="datetime-local" id="fuel-filter-end" />
-            </label>
-            <label>Event Type
-              <select id="fuel-filter-type">
-                <option value="">All</option>
-                <option value="transfer_internal">transfer_internal</option>
-                <option value="bunker_received">bunker_received</option>
-                <option value="offload_external">offload_external</option>
-                <option value="receive_external">receive_external</option>
-                <option value="sounding">sounding</option>
-                <option value="charter_on">charter_on</option>
-                <option value="charter_off">charter_off</option>
-                <option value="correction">correction</option>
-              </select>
-            </label>
-            <label>Operational Mode
-              <select id="fuel-filter-mode">
-                <option value="">All</option>
-                <option value="Dockside">Dockside</option>
-                <option value="Underway">Underway</option>
-                <option value="On DP">On DP</option>
-              </select>
-            </label>
-          </div>
-          <p id="fuel-rbac-note" class="muted"></p>
-          <form id="fuel-form">
-            <div class="grid">
-              <label>Event Type
-                <select id="fuel-event-type" required>
-                  <option value="transfer_internal">transfer_internal</option>
-                  <option value="bunker_received">bunker_received</option>
-                  <option value="offload_external">offload_external</option>
-                  <option value="receive_external">receive_external</option>
-                  <option value="sounding">sounding</option>
-                  <option value="charter_on">charter_on</option>
-                  <option value="charter_off">charter_off</option>
-                  <option value="correction">correction</option>
-                </select>
-              </label>
-              <label>Operational Mode
-                <select id="fuel-operational-mode" required>
-                  <option value="Dockside">Dockside</option>
-                  <option value="Underway">Underway</option>
-                  <option value="On DP">On DP</option>
-                </select>
-              </label>
-              <label>Source Tank
-                <select id="fuel-source-tank"><option value="">(none)</option></select>
-              </label>
-              <label>Destination Tank
-                <select id="fuel-destination-tank"><option value="">(none)</option></select>
-              </label>
-              <label>Gallons
-                <input type="number" step="0.1" min="0" id="fuel-gallons" required />
-              </label>
-              <label>Reference Number (optional)
-                <input type="text" id="fuel-reference-number" />
-              </label>
-              <label>Correction Of Event ID (required for correction)
-                <input type="text" id="fuel-correction-event-id" />
-              </label>
-              <label>Reason (required for correction)
-                <input type="text" id="fuel-correction-reason" />
-              </label>
-            </div>
-            <label>Notes
-              <textarea id="fuel-notes" rows="3"></textarea>
-            </label>
-            <button type="submit">Save Fuel Event</button>
-          </form>
-          <h4>Tank Balances</h4>
-          <ul id="fuel-tank-list"></ul>
-          <h4>Fuel Event Timeline</h4>
-          <ul id="fuel-events-list"></ul>
-        </section>
 
         <section id="crew-ops-report" class="card hidden">
           <div class="row">

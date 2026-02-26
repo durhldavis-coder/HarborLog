@@ -5,14 +5,14 @@ HarborLog is a simple, professional maritime vessel logging system with role-bas
 ## Features
 
 ### Authentication and roles
-- Login for **Admin**, **Crew**, **Engineer**, **Bridge Officer**, and **Read-only** users.
+- Login for **Admin** and **Crew** users.
 - Seeded default admin account:
   - Username: `admin`
   - Password: `admin123`
 
 ### Admin capabilities
 - Create vessels.
-- Create users (Admin/Crew/Engineer/Bridge Officer/Read-only).
+- Create users (Admin/Crew).
 - Assign Crew users to vessels.
 
 ### Crew capabilities
@@ -48,29 +48,6 @@ HarborLog is a simple, professional maritime vessel logging system with role-bas
 - Admin view of all Daily Ops reports.
 - Access control: only assigned crew (and admin) can access vessel Daily Ops reports.
 
-
-### Fuel module (event-based)
-- Tank model per vessel (`Main`/`Day`, port/starboard) with default seeded tanks.
-- Event types:
-  - `transfer_internal`
-  - `bunker_received`
-  - `offload_external`
-  - `receive_external`
-  - `sounding`
-  - `charter_on`
-  - `charter_off`
-  - `correction`
-- Operational mode captured on each event: `Dockside`, `Underway`, `On DP`.
-- No deletion endpoints for fuel events (immutable event history).
-- Gallons are write-once (no edit endpoint).
-- Correction events require original event reference + reason; charter on/off events are locked from correction.
-- Dynamic tank balances are calculated from event history (not stored as mutable balances).
-- RBAC enforcement:
-  - **Engineer** and **Bridge Officer** can create fuel events.
-  - Other roles are read-only for fuel events.
-- Daily Vessel Report API includes auto-calculated 24-hour transfer totals from fuel events.
-- Fuel page with event entry and filters by date range, event type, and operational mode.
-
 ### Data model guarantees
 - Stable UUID IDs for records.
 - ISO-8601 UTC timestamps for created/updated metadata.
@@ -90,11 +67,3 @@ python app.py
 Open: `http://localhost:3000`
 
 Database file is created automatically at `data/harborlog.db`.
-
-
-## Single Vessel Mode
-- `SINGLE_VESSEL_MODE=true` (default)
-- `HOME_VESSEL_NAME="Blue Sea"` (default)
-- On startup, HarborLog ensures the home vessel exists.
-- New Crew users are auto-assigned to the home vessel.
-- Manual assignment UI/workflows are disabled in this mode.
